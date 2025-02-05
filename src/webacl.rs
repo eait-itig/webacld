@@ -132,23 +132,24 @@ impl Acl {
             .or(any_user_filter)
             .or(user_filter)
             .or(group_filter)
-            .or(domain_filter)
-            .boxed();
+            .or(domain_filter);
 
         let allow = just("allow")
             .ignore_then(colon)
             .ignore_then(filter.clone())
-            .map(|f| Allow(f));
+            .map(Allow);
 
         let deny = just("deny")
             .ignore_then(colon)
             .ignore_then(filter)
-            .map(|f| Deny(f));
+            .map(Deny);
 
-        let ace = allow.or(deny).boxed();
-        let acl = ace.clone()
+        let ace = allow
+            .or(deny)
+            .boxed();
+        let acl = ace
             .separated_by(just(",").padded())
-            .map(|vec| Acl(vec));
+            .map(Acl);
 
         acl.then_ignore(end())
     }
