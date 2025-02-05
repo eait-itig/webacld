@@ -281,6 +281,10 @@ impl Client {
             Ok(tup) => tup,
             Err(why) => match why.kind() {
                 std::io::ErrorKind::TimedOut => return Err(TimedOut),
+                /*
+                 * Yes, this is a blocking socket. std gives us WouldBlock on it
+                 * when it hits the recv timeout. Why? Go ask your pop.
+                 */
                 std::io::ErrorKind::WouldBlock => return Err(TimedOut),
                 _ => return Err(Other(why.to_string()))
             }
@@ -303,10 +307,24 @@ impl Client {
         match self.xpkt(pkt, timeout) {
             Ok(Packet::NoValue { .. }) => Ok(NoValue),
             Ok(Packet::Value { data_size, data, .. }) =>
+                /*
+                 * We can end up needing to get more data in two ways here.
+                 *
+                 * First up: there was too much data to fit in a datagram
+                 * or in the u16 length in the header.
+                 */
                 if data_size == u16::MAX || data_size == (i16::MAX as u16) {
                     Ok(Partial(data))
+
+                /* success case */
                 } else if (data_size as usize) == data.len() {
                     Ok(Complete(data))
+
+                /*
+                 * Or, if the datagram is shorter than the header said it
+                 * should be (because of e.g. MTU restrictions that the server
+                 * knows about).
+                 */
                 } else {
                     Ok(Partial(data))
                 },
