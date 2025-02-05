@@ -39,7 +39,6 @@ mod webacl;
 mod server;
 
 use server::{Server, Config};
-use std::path::Path;
 use clap::Parser;
 use crate::slog::Drain;
 

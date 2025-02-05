@@ -16,7 +16,7 @@
  */
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Result, Value, Map};
+use serde_json::{Value, Map};
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct UserInfo {

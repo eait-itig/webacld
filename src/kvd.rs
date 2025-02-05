@@ -16,8 +16,6 @@
  */
 
 use std::net::UdpSocket;
-use std::net::SocketAddr;
-use std::net::IpAddr;
 use std::net::ToSocketAddrs;
 use std::time::Duration;
 
@@ -107,8 +105,6 @@ impl From<&Vec<u8>> for Cookie {
     }
 }
 
-pub type Bucket = Vec<u8>;
-
 #[deku_derive(DekuRead, DekuWrite)]
 #[derive(Debug, PartialEq)]
 #[deku(id_type = "u8", endian = "big")]
@@ -188,12 +184,6 @@ impl ClientConfig {
     pub fn with_port(mut self, port: u16) -> ClientConfig {
         self.port = port;
         self
-    }
-
-    pub fn from_host(host: &str) -> ClientConfig {
-        let mut config = ClientConfig::default();
-        config.host = host.into();
-        config
     }
 }
 
@@ -370,6 +360,7 @@ impl Client {
         }
     }
 
+    #[allow(dead_code)]
     pub fn create(&mut self, uinfo: &UserInfo, bucket: Option<&str>) -> Result<Cookie> {
         let mut retries = self.config.retries;
         let mut timeout = self.config.timeout;

@@ -16,7 +16,6 @@
  */
 
 use chumsky::prelude::*;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Acl(Vec<Entry>);
@@ -155,7 +154,7 @@ impl Acl {
     }
 }
 
-use std::ffi::{CStr, CString};
+use std::ffi::CString;
 
 pub fn local_user_exists(username: &str) -> bool {
     let username_c = CString::new(username).unwrap();
