@@ -15,6 +15,8 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+//! HTTP server logic for `webacld`
+
 use threadpool::ThreadPool;
 use tiny_http::{Request, Response, Header, StatusCode, HeaderField};
 use std::io::Cursor;
@@ -130,20 +132,28 @@ impl Server {
         let mut rhdrs: Vec<Header> = Vec::new();
         let mut uinfo: Option<UserInfo> = None;
 
+        /*
+         * First, let's see if they have a session cookie already.
+         * If they do, we will look it up to get their UserInfo.
+         * (we do that even if the ACL doesn't call for using it, so that
+         * we can log about this request using their username)
+         */
         if let Some(cookie) = Self::find_cookie(config, req) {
+
             let kvd_config = kvd::ClientConfig::default()
                 .with_host(config.kvd_host.as_str())
                 .with_port(config.kvd_port);
             let mut kvd = kvd::Client::open(kvd_config)?;
 
             let cookie: kvd::Cookie = cookie.into();
-            match kvd.get_auto(&cookie, &host) {
+            match kvd.get(&cookie, &host) {
                 Ok(Some(mut u)) => {
                     u._bucket = None;
                     uinfo = Some(u.clone());
 
                     log = log.new(o!("user" => u.user.clone()));
 
+                    /* These headers are used by nginx later */
                     rhdrs.push(Header {
                         field: "x-uq-user".parse().unwrap(),
                         value: AsciiString::from_ascii(u.user.as_bytes()).unwrap()
@@ -167,7 +177,13 @@ impl Server {
             }
         }
 
+        /*
+         * Now get the WebACL we should apply to this request.
+         * If nginx didn't send one, or we can't parse it we will just 403
+         * to be safe.
+         */
         if let Ok(acl_src) = Self::find_one_header(req, "x-acl") {
+
             let parser = webacl::Acl::parser();
             match parser.parse(acl_src) {
                 Ok(acl) => {
@@ -179,6 +195,8 @@ impl Server {
                     log = log.new(o!("acl" => format!("{:?}", acl)));
 
                     if let webacl::Decision::Deny = decision {
+
+                        /* Are they logged in? */
                         if let Some(_) = uinfo {
                             info!(log, "logged-in user denied access");
                             let mut resp = Response::from_string("Logged in user denied access")
@@ -188,10 +206,17 @@ impl Server {
                                 resp.add_header(h);
                             }
                             return Ok(resp);
+
                         } else {
                             info!(log, "anon user denied access");
+                            /*
+                             * Don't do anything here, we want to fall through
+                             * to the case at the bottom which will redirect
+                             * them to the login screen
+                             */
                         }
                     }
+
                     if let webacl::Decision::Allow = decision {
                         info!(log, "allowed access");
                         let mut resp = Response::from_string("ACL allowed access")
@@ -207,6 +232,8 @@ impl Server {
                     parse_errs
                         .into_iter()
                         .for_each(|e| error!(log, "ACL parse error: {}", e))
+
+                    /* TODO: should this fall through to redir? */
                 }
             }
         } else {

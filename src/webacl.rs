@@ -15,27 +15,57 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+//! Parser and evaluator for the WebACL format.
+//!
+//! The WebACL format consists of stanzas separated by comma (`,`) characters
+//! and whitespace. Each stanza is of the general form `verb:filter`, where
+//! filter can be further qualified as e.g. `user:<username>` for a filter
+//! matching a specific user by their name.
+
 use chumsky::prelude::*;
 
+/// A WebACL access control list, consisting of multiple Stanzas.
+///
+/// This is usually constructed by parsing the text form of the WebACL, e.g.
+/// with:
+/// ```
+///   let p = webacl::Acl::parser();
+///   match p.parse("allow:user:foobar, deny:group:'what'") {
+///     Ok(acl) => { .. },
+///     Err(errs) =>
+///       errs.into_iter().for_each(|e|
+///         error!(log, "ACL parse error: {}", e))
+///   }
+/// ```
 #[derive(Debug, PartialEq, Clone)]
-pub struct Acl(Vec<Entry>);
+pub struct Acl(Vec<Stanza>);
 
+/// A stanza within an WebACL, which can either have an `allow` action or a
+/// `deny` action when it matches.
 #[derive(Debug, PartialEq, Clone)]
-pub enum Entry {
+pub enum Stanza {
     Allow(Filter),
     Deny(Filter),
 }
 
+/// The filter part of a Stanza.
 #[derive(Debug, PartialEq, Clone)]
 pub enum Filter {
+    /// Matches a specific user by username (`allow:user:uqfoo`)
     User(String),
+    /// Matches users who are a member of a given group (`allow:group:foobar`)
     Group(String),
+    /// Matches users who exist on the given domain (`allow:domain:eait`)
     Domain(String),
+    /// Matches any user that exists on the local machine (`allow:user:*local`)
     LocalUser,
+    /// Matches any logged-in user (`allow:user:*`)
     AnyUser,
+    /// Matches any request, logged in or not (`allow:*`)
     Any,
 }
 
+/// Allow/Deny status as returned during ACL evaluation.
 #[derive(Debug, PartialEq)]
 pub enum Decision {
     Allow,
@@ -45,6 +75,11 @@ pub enum Decision {
 use crate::userinfo::UserInfo;
 
 impl Acl {
+    /// Check a given user against the ACL and decide whether they should
+    /// be allowed or denied.
+    ///
+    /// WebACLs are default-deny, meaning that if no Stanzas match the user,
+    /// the decision returned is `Deny`.
     pub fn check(&self, user: Option<&UserInfo>) -> Decision {
         for entry in self.0.iter() {
             match entry.check(user) {
@@ -56,18 +91,24 @@ impl Acl {
     }
 }
 
-impl Entry {
+impl Stanza {
+    /// Checks whether this Stanza matches the given user, and returns what
+    /// decision to make (if any).
+    ///
+    /// If the Stanza's Filter does not match, returns `None`. Otherwise
+    /// returns `Some(Allow)` or `Some(Deny)`.
     pub fn check(&self, user: Option<&UserInfo>) -> Option<Decision> {
         match self {
-            Entry::Allow(filter) =>
+            Stanza::Allow(filter) =>
                 if filter.matches(user) { Some(Decision::Allow) } else { None },
-            Entry::Deny(filter)  =>
+            Stanza::Deny(filter)  =>
                 if filter.matches(user) { Some(Decision::Deny) } else { None },
         }
     }
 }
 
 impl Filter {
+    /// Checks whether this Filter matches the given user.
     pub fn matches(&self, u: Option<&UserInfo>) -> bool {
         if let Any = self {
             true
@@ -88,10 +129,11 @@ impl Filter {
     }
 }
 
-use Entry::*;
+use Stanza::*;
 use Filter::*;
 
 impl Acl {
+    /// Build a parser for text-format WebACLs
     pub fn parser() -> impl Parser<char, Acl, Error = Simple<char>> {
         let colon = just(":").padded();
 
@@ -157,7 +199,11 @@ impl Acl {
 
 use std::ffi::CString;
 
-pub fn local_user_exists(username: &str) -> bool {
+/// Uses `libc::getpwnam()` to check whether a given username exists as a
+/// local user on the current machine.
+///
+/// Used by `LocalUser` filters.
+fn local_user_exists(username: &str) -> bool {
     let username_c = CString::new(username).unwrap();
     unsafe {
         let ptr = libc::getpwnam(username_c.as_ptr());

@@ -15,6 +15,26 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+//! `webacld` is a side-car daemon to run alongside nginx or Caddy, to provide
+//! SSO authentication and ACL validation.
+//!
+//! It assumes the existence of a KVD SSO infrastrucure (such as the one
+//! run at the UQ Faculty of EAIT).
+//!
+//! The daemon listens for HTTP on a UNIX domain socket and expects to receive
+//! requests without bodies, with headers copied from the original user
+//! request (such as produced by e.g. the nginx `auth_request` directive).
+//!
+//! The web server is also expected to add the headers:
+//!  * `X-Original-URI`, containing the original request URI
+//!  * `X-ACL`, containg a WebACL format access control list
+//!
+//! `webacld` will unpack the cookies contained in the request, perform a KVD
+//! lookup to get the user's information blob, and then apply the given WebACL
+//! to decide if their access is permitted. It also returns the `X-UQ-User`,
+//! `X-UQ-User-Email` and `X-KVD-Payload` headers for nginx to inject into
+//! any further backend requests.
+
 extern crate tiny_http;
 extern crate deku;
 extern crate base64;
@@ -42,21 +62,27 @@ use server::{Server, Config};
 use clap::Parser;
 use crate::slog::Drain;
 
+/// Command-line arguments for `webacld`
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
-struct Args {
+pub struct Args {
+    /// Path to the UNIX domain listening socket
     #[arg(short, long, default_value = "/tmp/webacld.sock")]
     listen_path: String,
 
+    /// Number of threads in the request worker threadpool
     #[arg(short, long, default_value_t = 4)]
     workers: usize,
 
+    /// Hostname or IP address of the KVD server
     #[arg(short = 'k', long, default_value = "172.23.84.20")]
     kvd_host: String,
 
+    /// Port to contact the KVD server over UDP
     #[arg(short = 'p', long, default_value_t = 1080)]
     kvd_port: u16,
 
+    /// Name of the HTTP cookie containing the KVD session key
     #[arg(short, long, default_value = "EAIT_WEB")]
     cookie: String
 }

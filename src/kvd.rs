@@ -15,6 +15,8 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+//! KVD protocol packet structs and client.
+
 use std::net::UdpSocket;
 use std::net::ToSocketAddrs;
 use std::time::Duration;
@@ -23,6 +25,11 @@ use crate::userinfo::UserInfo;
 
 use deku::prelude::*;
 
+/// Local `Error` type for the KVD client.
+///
+/// We break out `TimedOut` and `Truncated` errors from all other errors
+/// (where we just return a `String` for now), since these require special
+/// action in our code.
 #[derive(Debug)]
 pub enum Error {
     TimedOut,
@@ -51,6 +58,7 @@ impl From<Error> for String {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// KVD "cookie" or "key" value, a 32-character unique string
 #[derive(Debug, PartialEq, Clone, DekuRead, DekuWrite)]
 #[deku(ctx = "_endian: deku::ctx::Endian")]
 pub struct Cookie {
@@ -59,6 +67,7 @@ pub struct Cookie {
 }
 
 impl Cookie {
+    /// Generate a new random [`Cookie`] using url-safe base64.
     pub fn random() -> Self {
         let mut buf = [0u8; 24];
         getrandom::fill(&mut buf).expect("getrandom failed");
@@ -66,6 +75,7 @@ impl Cookie {
         v.resize(32, 0);
         Cookie { bytes: v }
     }
+    /// Converts the [`Cookie`] to a [`str`] value (removing any NUL bytes)
     fn to_str(&self) -> &str {
         let mut i = 0;
         while i < 32 && self.bytes[i] != 0 {
@@ -105,53 +115,78 @@ impl From<&Vec<u8>> for Cookie {
     }
 }
 
+/// Message exchanged in the KVD protocol
+///
+/// This enum represents all of the supported KVD protocol messages.
 #[deku_derive(DekuRead, DekuWrite)]
 #[derive(Debug, PartialEq)]
 #[deku(id_type = "u8", endian = "big")]
 pub enum Packet {
+    /// Sent to the KVD server to create a new session
     #[deku(id = 0)]
     Create {
         #[deku(pad_bytes_before = "1", temp, temp_value = "data.len() as u16")]
         payload_size: u16,
+        /// Correlation cookie (will be included in the reply verbatim)
         cookie: Cookie,
+        /// JSON data to put in the new session
         #[deku(count = "payload_size")]
         data: Vec<u8>
     },
+    /// Server reply to a [`Packet::Create`] message, gives the new session's key
     #[deku(id = 1)]
     Created {
         #[deku(pad_bytes_before = "1", temp, temp_value = "32")]
         payload_size: u16,
+        /// Correlation cookie (matches the `Create` command)
         cookie: Cookie,
+        /// The new KVD session key
         key: Cookie
     },
+    /// Sent to the KVD server to request the JSON data for a given session
     #[deku(id = 2)]
     Request {
         #[deku(pad_bytes_before = "1", temp, temp_value = "bucket.len() as u16")]
         payload_size: u16,
+        /// Session key
         key: Cookie,
+        /// The host bucket (FQDN from the URI the user requested)
         #[deku(count = "payload_size")]
         bucket: Vec<u8>
     },
+    /// Server reply to [`Packet::Request`] when the session has JSON data
     #[deku(id = 3)]
     Value {
         #[deku(pad_bytes_before = "1")]
         data_size: u16,
+        /// Session key
         key: Cookie,
+        /// JSON data about the user
         #[deku(read_all)]
         data: Vec<u8>
     },
+    /// Server reply to [`Packet::Request`] when the session does not exist or is invalid
     #[deku(id = 4)]
     NoValue {
         #[deku(pad_bytes_before = "1", temp, temp_value = "0")]
         payload_size: u16,
+        /// Session key
         key: Cookie
     },
+    /// Modified version of [`Packet::Request`] which includes an offset and allows for
+    /// retrieving partial data
+    ///
+    /// This is necessary when the size of the user info JSON exceeds the
+    /// maximum that can be transferred in a single UDP datagram.
     #[deku(id = 13)]
     PartialRequest {
         #[deku(pad_bytes_before = "1", temp, temp_value = "(bucket.len() + 4) as u16")]
         payload_size: u16,
+        /// Session key
         key: Cookie,
+        /// Offset in the JSON blob to begin any `Value` reply at
         offset: u32,
+        /// Host bucket (FQDN)
         #[deku(count = "payload_size - 4")]
         bucket: Vec<u8>
     },
@@ -159,6 +194,7 @@ pub enum Packet {
 
 const DEFAULT_PORT: u16 = 1080;
 
+/// Configuration for creating a new [`Client`] instance
 pub struct ClientConfig {
     pub host: String,
     pub port: u16,
@@ -187,15 +223,20 @@ impl ClientConfig {
     }
 }
 
+/// Client for the KVD protocol
 pub struct Client {
     socket: UdpSocket,
     config: ClientConfig,
 }
 
+/// Return type for [`Client::get_partial`]
 #[derive(Debug)]
 pub enum PartialReturn {
+    /// No value for the given key
     NoValue,
+    /// Value completely received, this is the last chunk
     Complete(Vec<u8>),
+    /// Chunk of data, there is more to fetch
     Partial(Vec<u8>)
 }
 
@@ -204,6 +245,7 @@ use PartialReturn::*;
 use base64::{engine::general_purpose::URL_SAFE, Engine as _};
 
 impl Client {
+    /// Creates a new client, using the given Config.
     pub fn open(config: ClientConfig) -> Result<Client,> {
         match UdpSocket::bind("0.0.0.0:0") {
             Ok(socket) => Ok(Client { socket, config }),
@@ -211,6 +253,8 @@ impl Client {
         }
     }
 
+    /// Request-reply exchange of packets with the server.
+    #[doc(hidden)]
     fn xpkt(&mut self, pkt: Packet, timeout: u32) -> Result<Packet> {
         let mut diter = match (self.config.host.as_str(), self.config.port).to_socket_addrs() {
             Ok(diter) => diter,
@@ -248,6 +292,7 @@ impl Client {
         }
     }
 
+    #[doc(hidden)]
     fn get_partial_once(&mut self, key: &Cookie, bucket: &str, offset: u32, timeout: u32) -> Result<PartialReturn> {
         let mut pkt = Packet::PartialRequest {
             key: key.clone(),
@@ -272,6 +317,10 @@ impl Client {
         }
     }
 
+    /// Retrieve part of the JSON value for a given key.
+    ///
+    /// Sends a [`Packet::PartialRequest`] message to the server and returns
+    /// its response.
     pub fn get_partial(&mut self, key: &Cookie, bucket: &str, offset: u32) -> Result<PartialReturn> {
         let mut retries = self.config.retries;
         let mut timeout = self.config.timeout;
@@ -288,6 +337,7 @@ impl Client {
         Err(TimedOut)
     }
 
+    #[doc(hidden)]
     fn get_bucket_once(&mut self, key: &Cookie, bucket: &str, timeout: u32) -> Result<Option<Vec<u8>>> {
         let mut pkt = Packet::Request {
             key: key.clone(),
@@ -331,6 +381,7 @@ impl Client {
         Err(TimedOut)
     }
 
+    #[doc(hidden)]
     fn create_once(&mut self, uinfo: &UserInfo, bucket: Option<&str>, timeout: u32) -> Result<Cookie> {
         let cookie = Cookie::random();
 
@@ -378,6 +429,7 @@ impl Client {
         Err(TimedOut)
     }
 
+    #[doc(hidden)]
     fn get_once(&mut self, key: &Cookie, timeout: u32) -> Result<Option<Vec<u8>>> {
         let mut pkt = Packet::Request {
             key: key.clone(),
@@ -399,7 +451,8 @@ impl Client {
         }
     }
 
-    pub fn get(&mut self, key: &Cookie) -> Result<Option<UserInfo>> {
+    /// Performs an old-style KVD request with no bucket (for non-FaKVD KVD)
+    pub fn get_classic(&mut self, key: &Cookie) -> Result<Option<UserInfo>> {
         let mut retries = self.config.retries;
         let mut timeout = self.config.timeout;
         while retries > 0 {
@@ -421,7 +474,13 @@ impl Client {
         Err(TimedOut)
     }
 
-    pub fn get_auto(&mut self, key: &Cookie, bucket: &str) -> Result<Option<UserInfo>> {
+    /// Gets the [`UserInfo`] associated with a given session from the KVD server.
+    ///
+    /// This function automatically attempts to use a [`Packet::PartialRequest`]
+    /// and then falls back to the normal [`Packet::Request`] message (with and
+    /// then without a host bucket), so that it can be used against both FaKVD
+    /// and classic KVD.
+    pub fn get(&mut self, key: &Cookie, bucket: &str) -> Result<Option<UserInfo>> {
         let mut offset: u32 = 0;
         let mut data = vec![0_u8; 0];
         loop {
@@ -450,7 +509,7 @@ impl Client {
             Err(Other(why)) => return Err(Other(why)),
             Err(Truncated) => return Err(Truncated)
         }
-        self.get(key)
+        self.get_classic(key)
     }
 }
 
