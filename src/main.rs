@@ -62,6 +62,7 @@ mod server;
 use server::{Server, Config};
 use clap::Parser;
 use crate::slog::Drain;
+use std::fs::OpenOptions;
 
 /// Command-line arguments for `webacld`
 #[derive(Parser, Debug)]
@@ -85,17 +86,36 @@ pub struct Args {
 
     /// Name of the HTTP cookie containing the KVD session key
     #[arg(short, long, default_value = "EAIT_WEB")]
-    cookie: String
+    cookie: String,
+
+    /// Log file
+    #[arg(short = 'L', long)]
+    log_file: Option<String>,
 }
 
 fn main() {
-    let Args { listen_path, workers, kvd_host, kvd_port, cookie } = Args::parse();
+    let Args { listen_path, workers, kvd_host, kvd_port, cookie, log_file } = Args::parse();
 
-    let decorator = slog_term::TermDecorator::new().build();
-    let drain = slog_term::FullFormat::new(decorator).build().fuse();
-    let drain = slog_async::Async::new(drain).build().fuse();
-
-    let log = slog::Logger::root(drain, o!());
+    let log: slog::Logger = match log_file {
+        None => {
+            let decorator = slog_term::TermDecorator::new().build();
+            let drain = slog_term::FullFormat::new(decorator).build().fuse();
+            let drain = slog_async::Async::new(drain).build().fuse();
+            slog::Logger::root(drain, o!())
+        },
+        Some(path) => {
+            let file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .append(true)
+                .open(path)
+                .unwrap();
+            let decorator = slog_term::PlainDecorator::new(file);
+            let drain = slog_term::FullFormat::new(decorator).build().fuse();
+            let drain = slog_async::Async::new(drain).build().fuse();
+            slog::Logger::root(drain, o!())
+        }
+    };
 
     info!(log, "deleting old socket: {}", &listen_path);
     let _ = std::fs::remove_file(&listen_path);
