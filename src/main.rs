@@ -47,6 +47,7 @@ extern crate threadpool;
 extern crate ascii;
 extern crate biscotti;
 extern crate clap;
+extern crate regex;
 
 #[macro_use]
 extern crate slog;

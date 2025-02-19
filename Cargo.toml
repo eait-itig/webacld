@@ -19,3 +19,4 @@ clap = { version = "4", features = ["derive"] }
 slog = { version = "2" }
 slog-term = "2"
 slog-async = "2"
+regex = "1"

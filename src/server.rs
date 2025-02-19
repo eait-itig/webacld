@@ -24,6 +24,7 @@ use ascii::AsciiString;
 use std::path::Path;
 use biscotti::{Processor, ProcessorConfig, RequestCookies};
 use chumsky::Parser;
+use regex::Regex;
 
 use crate::kvd;
 use crate::userinfo::UserInfo;
@@ -152,6 +153,31 @@ impl Server {
                     uinfo = Some(u.clone());
 
                     log = log.new(o!("user" => u.user.clone()));
+
+                    /*
+                     * nginx can give us a regular expression in x-group-match
+                     * in order to subset the groups we include in the
+                     * x-kvd-payload header. This is used to limit the size of
+                     * the headers for backends that still need group info
+                     * but can't deal with the whole list for users in
+                     * thousands of groups.
+                     */
+                    if let Ok(grp_re_src) = Self::find_one_header(req, "x-group-match") {
+                        match Regex::new(&grp_re_src) {
+                            Ok(grp_re) => {
+                                /*
+                                 * Mutate the group list on "u", but not
+                                 * "userinfo", since the latter will be used
+                                 * for ACL matching below.
+                                 */
+                                u.groups.retain(|g| grp_re.is_match(&g));
+                            },
+                            Err(err) => {
+                                error!(log, "failed to parse x-group-match regex ({}): {}", grp_re_src, err.to_string());
+                                /* XXX: fail the request? */
+                            }
+                        }
+                    }
 
                     /* These headers are used by nginx later */
                     rhdrs.push(Header {
